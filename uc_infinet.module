@@ -1,0 +1,483 @@
+ince db_next_id() introduce some problems, and the use of this function
+   can be replaced by database level auto increment handling, db_next_id()
+   is now gone and replaced as db_last_insert_id() with help of serial type
+   under Schema API (check out http://drupal.org/node/149176 for more details).
+   Please refer to drupal_write_record() as demonstration. */
+
+/* TODO FormAPI image buttons are now supported.
+   FormAPI now offers the 'image_button' element type, allowing developers to
+   use icons or other custom images in place of traditional HTML submit buttons.
+
+$form['my_image_button'] = array(
+  '#type'         => 'image_button',
+  '#title'        => t('My button'),
+  '#return_value' => 'my_data',
+  '#src'          => 'my/image/path.jpg',
+); */
+
+/* TODO Remove $row argument from db_result() method
+   The $row argument of db_result() was removed from the database abstraction
+   layer in 6.x core, as it was a database dependent option. Developers need to
+   use other handling to replace the needs of this method. */
+
+/* TODO Change 'Submit' to 'Save' on buttons
+   It has been agreed on that the description 'Submit' for a button is not a
+   good choice since it does not indicate what actually happens. While for
+   example on node editing forms, 'Preview' and 'Delete' describe exactly what
+   will happen when the user clicks on the button, 'Submit' only gives a vague
+   idea. When labelling your buttons, make sure that it is clear what this
+   button does when the user clicks on it. */
+
+/* TODO Node previews and adding form fields to the node form.
+   There is a subtle but important difference in the way node previews (and other
+   such operations) are carried out when adding or editing a node. With the new
+   Forms API, the node form is handled as a multi-step form. When the node form
+   is previewed, all the form values are submitted, and the form is rebuilt with
+   those form values put into $form['#node']. Thus, form elements that are added
+   to the node form will lose any user input unless they set their '#default_value'
+   elements using this embedded node object. */
+
+/* TODO New user_mail_tokens() method may be useful.
+   user.module now provides a user_mail_tokens() function to return an array
+   of the tokens available for the email notification messages it sends when
+   accounts are created, activated, blocked, etc. Contributed modules that
+   wish to make use of the same tokens for their own needs are encouraged
+   to use this function. */
+
+/* TODO
+   There is a new hook_watchdog in core. This means that contributed modules
+   can implement hook_watchdog to log Drupal events to custom destinations.
+   Two core modules are included, dblog.module (formerly known as watchdog.module),
+   and syslog.module. Other modules in contrib include an emaillog.module,
+   included in the logging_alerts module. See syslog or emaillog for an
+   example on how to implement hook_watchdog.
+function example_watchdog($log = array()) {
+  if ($log['severity'] == WATCHDOG_ALERT) {
+    mysms_send($log['user']->uid,
+      $log['type'],
+      $log['message'],
+      $log['variables'],
+      $log['severity'],
+      $log['referer'],
+      $log['ip'],
+      format_date($log['timestamp']));
+  }
+} */
+
+/* TODO Implement the hook_theme registry. Combine all theme registry entries
+   into one hook_theme function in each corresponding module file.
+function uc_infinet_theme() {
+  return array(
+  );
+}; */
+
+
+/* TODO
+   An argument for replacements has been added to format_plural(),
+   escaping and/or theming the values just as done with t().*/
+
+/* TODO You may want to take advantage of new form-specific alter hooks.
+   The hook_form_alter() is complemented by hook_form_$form-id_alter().
+   Optionally, modules can implement form-specific alteration functions rather
+   than a single hook_form_alter() with many conditional switch statements.
+   This is optional, and is most useful for tidying the code of modules that
+   alter many forms to customize a site's operations.
+   The new function names are built using the following format:
+   [your-module-name]_form_[$form_id]_alter. */
+
+/**
+ * @file
+ * Integrates infinet/nelnet's redirected payment service.
+ */
+
+/*******************************************************************************
+ * Hook Functions (Drupal)
+ ******************************************************************************/
+
+/**
+ * Implementation of hook_menu().
+ */
+
+function uc_infinet_menu() {
+/* TODO
+   Non menu code that was placed in hook_menu under the '!$may_cache' block
+   so that it could be run during initialization, should now be moved to hook_init.
+   Previously we called hook_init twice, once early in the bootstrap process, second
+   just after the bootstrap has finished. The first instance is now called boot
+   instead of init.
+
+   In Drupal 6, there are now two hooks that can be used by modules to execute code
+   at the beginning of a page request. hook_boot() replaces hook_boot() in Drupal 5
+   and runs on each page request, even for cached pages. hook_boot() now only runs
+   for non-cached pages and thus can be used for code that was previously placed in
+   hook_menu() with $may_cache = FALSE:
+
+   Dynamic menu items under a '!$may_cache' block can often be simplified
+   to remove references to arg(n) and use of '%<function-name>' to check
+   conditions. See http://drupal.org/node/103114.
+
+   The title and description arguments should not have strings wrapped in t(),
+   because translation of these happen in a later stage in the menu system.
+*/
+  $items['cart/infinet/complete'] = array(
+    'title' => 'Order complete',
+    'page callback' => 'uc_infinet_complete',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  $items['cart/infinet/finalize'] = array(
+    'title' => 'Order complete',
+    'page callback' => 'uc_infinet_finalize',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_form_alter().
+ */
+function uc_infinet_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'uc_cart_checkout_review_form' && ($order_id = intval($_SESSION['cart_order'])) > 0) {
+    $order = uc_order_load($order_id);
+
+    if ($order->payment_method == 'infinet') {
+      unset($form['submit']);
+      $form['#prefix'] = '<table style="display: inline; padding-top: 1em;"><tr><td>';
+      $form['#suffix'] = '</td><td>'. drupal_get_form('uc_infinet_form', $order) .'</td></tr></table>';
+    }
+  }
+}
+
+
+/*******************************************************************************
+ * Hook Functions (Ubercart)
+ ******************************************************************************/
+
+/**
+ * Implementation of hook_payment_method().
+ */
+function uc_infinet_payment_method() {
+  $path = base_path() . drupal_get_path('module', 'uc_infinet');
+  $title = t('Credit card/eCheck on a secure server:');
+  $title .= '<br /><img src="'. $path .'/2cocc05.gif" style="position: relative; left: 2.5em;">';
+
+  $methods[] = array(
+    'id' => 'infinet',
+    'name' => t('NelNet'),
+    'title' => $title,
+    'review' => t('Nelnet'),
+    //'review' => variable_get('uc_infinet_check', FALSE) ? t('Credit card/eCheck') : t('Credit card...'),
+    'desc' => t('Redirect to infinet to pay by credit card or eCheck.'),
+    'callback' => 'uc_payment_method_infinet',
+    'weight' => 3,
+    'checkout' => TRUE,
+    'no_gateway' => TRUE,
+  );
+
+  return $methods;
+}
+
+
+/*******************************************************************************
+ * Callback Functions, Forms, and Tables
+ ******************************************************************************/
+
+/**
+ * Callback for infinet payment method settings.
+ */
+function uc_payment_method_infinet($op, &$arg1) {
+  switch ($op) {
+    case 'cart-details':
+/*
+      if (variable_get('uc_infinet_check', FALSE)) {
+        if ($_SESSION['pay_method'] == 'CK') {
+          $sel[2] = ' selected="selected"';
+        }
+        else {
+          $sel[1] = ' selected="selected"';
+        }
+        unset($_SESSION['pay_method']);
+        $details = '<div class="form-item"><b>'. t('Select your payment type:')
+                  .'</b> <select name="pay_method" class="form-select" id="edit-pay-method">'
+                  .'<option value="cc"'. $sel[1] .'>'. t('Credit card') .'</option>'
+                  .'<option value="cc"'. $sel[2] .'>'. t('Online check') .'</option></select></div>';
+      }
+      return $details;
+*/
+      return '';
+
+    case 'cart-process':
+/*
+      $_SESSION['pay_method'] = $_POST['pay_method'];
+*/
+      return;
+
+    case 'settings':
+      $form['uc_infinet_sid'] = array(
+        '#type' => 'textfield',
+        '#title' => t('NelNet Order Type'),
+        '#description' => t('Your NelNet Order Type.'),
+        '#default_value' => variable_get('uc_infinet_sid', ''),
+      );
+      $form['uc_infinet_deptid'] = array(
+        '#type' => 'textfield',
+        '#title' => t('NelNet Dept ID'),
+        '#description' => t('Your NelNet Department ID.'),
+        '#default_value' => variable_get('uc_infinet_deptid', ''),
+      );
+      $form['uc_infinet_secret_word'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Secret Key'),
+        '#description' => t('The secret key entered in your NelNet settings.'),
+        '#default_value' => variable_get('uc_infinet_secret_word', 'key'),
+        '#size' => 16,
+      );
+      $form['uc_infinet_nelneturl'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Nelnet Checkout URL'),
+        '#description' => t('The payment gateway URL; usually ends in "payer.do"'),
+        '#default_value' => variable_get('uc_infinet_nelneturl', ''),
+      );
+/*
+      $form['uc_infinet_demo'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Enable demo mode, allowing you to process fake orders for testing purposes.'),
+        '#default_value' => variable_get('uc_infinet_demo', TRUE),
+      );
+      $form['uc_infinet_check'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Allow customers to choose to pay by credit card or online check. (currently not supported)'),
+        '#default_value' => variable_get('uc_infinet_check', FALSE),
+      );
+      $form['uc_infinet_method_title'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Payment method title'),
+        '#default_value' => variable_get('uc_infinet_method_title', t('Credit card/eCheck on a secure server:')),
+      );
+      $form['uc_infinet_method_title_icons'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Show credit card icons beside the payment method title.'),
+        '#default_value' => variable_get('uc_infinet_method_title_icons', TRUE),
+      );
+      $form['uc_infinet_checkout_button'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Order review submit button text'),
+        '#description' => t('Provide NelNet specific text for the submit button on the order review page.'),
+        '#default_value' => variable_get('uc_infinet_checkout_button', t('Submit Order')),
+      );
+
+      $form['uc_infinet_checkout_type'] = array(
+        '#type' => 'select',
+        '#title' => t('NelNet Live / Testing URL'),
+        '#description' => t('Select between testing and live production servers.  Be sure and match the Secret Key to the environment.'),
+        '#options' => array(
+          'multi' => t('Test checkout'),
+          'single' => t('Live checkout'),
+        ),
+        '#default_value' => variable_get('uc_infinet_checkout_type', 'multi'),
+      );
+*/
+    return $form;
+  }
+}
+
+// Form to build the submission to infinet.com.
+function uc_infinet_form(&$form_state, $order) {
+  $country = uc_get_country_data(array('country_id' => $order->billing_country));
+  if ($country === FALSE) {
+    $country = array(0 => array('country_iso_code_3' => 'USA'));
+  }
+
+  //SPN account construction
+  $i = 0;
+  $spn = 0;
+
+  foreach ($order->products as $product) {
+    $i++;
+    $data['c_prod_'. $i] = $product->model .','. $product->qty;
+    $data['c_name_'. $i] = $product->wieght;
+    $data['c_account_'. $i] = $product->account;
+    $data['c_description_'. $i] = $product->title;
+    $data['c_price_'. $i] = uc_currency_format($product->price, FALSE, FALSE, '.');
+
+    if (1 == $product->account) {
+      $spn2 = uc_currency_format($product->price, FALSE, FALSE, '.');
+      $spn = $spn + $spn2;
+    }
+  }
+
+  $orderType = variable_get('uc_infinet_sid', '');
+  $orderName = substr($order->billing_first_name .' '. $order->billing_last_name, 0, 128);
+  $amount = uc_currency_format($order->order_total, FALSE, FALSE, '');
+  $userChoice1 = variable_get('uc_infinet_deptid', '');
+  $userChoice2 = $order->order_id;
+//  $userChoice3 = $spn;
+  $userChoice3 = uc_cart_get_id();
+  $paymentMethod = isset($_SESSION['pay_method']) ? $_SESSION['pay_method'] : 'cc';
+
+  $streetOne = substr($order->billing_street1, 0, 64);
+  $streetTwo = substr($order->billing_street2, 0, 64);
+  $city = substr($order->billing_city, 0, 64);
+  $state = uc_get_zone_code($order->billing_zone);
+  $zip = substr($order->billing_postal_code, 0, 16);
+  $country = $country[0]['country_iso_code_3'];
+  $daytimePhone = substr($order->billing_phone, 0, 16);
+
+  $email = substr($order->primary_email, 0, 64);
+//  $redirectUrl =  url('cart/infinet/complete/'. uc_cart_get_id(), array('absolute' => TRUE));
+  $redirectUrl =  url('cart/infinet/complete', array('absolute' => TRUE));
+  watchdog('uc_infinet.module', 'uc_infinet_form.@redirectUrl', array('@redirectUrl' => $redirectUrl), WATCHDOG_WARNING);
+  $redirectUrlParameters = "transactionType,transactionStatus,transactionId,transactionTotalAmount,transactionDate,transactionAcountType,accountHolderName,streetOne,streetTwo,city,state,zip,country,daytimePhone,email,userChoice1,userChoice2,userChoice3";
+  $retriesAllowed = "1";
+  $timeStamp = (time() - 100) . "000";
+  $key =  variable_get('uc_infinet_secret_word', 'key');
+  $hash2 = md5($orderType . $orderName . $amount . $userChoice1 . $userChoice2 . $userChoice3 . $paymentMethod . $streetOne . $streetTwo . $city . $state . $zip . $country . $daytimePhone . $email . $redirectUrl . $redirectUrlParameters . $retriesAllowed . $timeStamp . $key);
+
+
+
+
+
+  $data = array(
+    'orderType' => $orderType,
+    'orderName' => $orderName,
+    'amount' =>  $amount,
+    'userChoice1' =>  $userChoice1,
+    'userChoice2' =>  $userChoice2,
+    'userChoice3' =>  $userChoice3,
+    'paymentMethod' =>  $paymentMethod,
+    'streetOne' => $streetOne,
+    'streetTwo' => $streetTwo,
+    'city' => $city,
+    'state' => $state,
+    'zip' => $zip,
+    'country' => $country,
+    'daytimePhone' => $daytimePhone,
+    'email' => $email,
+    'redirectUrl' => $redirectUrl,
+    'redirectUrlParameters' => $redirectUrlParameters,
+    'retriesAllowed' => $retriesAllowed,
+    'timestamp' => $timeStamp,
+    'hash' => $hash2,
+  );
+
+
+
+  $form['#action'] = _infinet_post_url(variable_get('uc_infinet_nelneturl', 'NULL'));
+
+  foreach ($data as $name => $value) {
+    $form[$name] = array('#type' => 'hidden', '#value' => $value);
+  }
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit Order'),
+  );
+
+  return $form;
+}
+
+function uc_infinet_complete($cart_id = 0) {
+
+  $order = uc_order_load($_GET['userChoice2']);
+
+  if ($order === FALSE || uc_order_status_data($order->order_status, 'state') != 'in_checkout') {
+    print t('An error has occurred during payment.  Please contact us to ensure your order has submitted.');
+    exit();
+  }
+
+  if ($_GET['demo'] != 'N') {
+    $key = $_GET['key'];
+    $valid = md5(variable_get('uc_infinet_secret_word', 'key') . $_GET['sid'] . $_GET['transactionAcountType'] . $_GET['transactionDate']);
+    if (strtolower($key) != strtolower($valid)) {
+      uc_order_comment_save($order->order_id, 0, t('Attempted unverified infinet completion for this order.'), 'admin');
+    }
+  }
+
+  $order->billing_street1 = $_GET['streetOne'];
+  $order->billing_street2 = $_GET['streetTwo'];
+  $order->city = $_GET['city'];
+  $order->billing_postal_code = $_GET['zip'];
+  //$order->billing_phone = ($_GET['daytimePhone'] . 'Comformation Number: ' . $_GET['transactionId']);
+
+  $zone_id = db_result(db_query("SELECT zone_id FROM {uc_zones} WHERE zone_code LIKE '%s'", $_GET['state']));
+  if (!empty($zone_id)) {
+    $order->billing_zone = $zone_id;
+  }
+
+  $country_id = db_result(db_query("SELECT country_id FROM {uc_countries} WHERE country_name LIKE '%s'", $_GET['country']));
+ // FIXME? awk: should this be
+ // if (!empty($country_id)) {
+ // instead of:
+  if (!empty($zone_id)) {
+   $order->billing_country = $country_id;
+  }
+
+  if (strtolower($_GET['email']) !== strtolower($order->primary_email)) {
+    uc_order_comment_save($order->order_id, 0, t('Customer used a different e-mail address during payment: !email', array('!email' => check_plain($_GET['email']))), 'admin');
+  }
+
+  if ($_GET['transactionStatus'] == '1' && is_numeric($_GET['transactionTotalAmount'])) {
+  drupal_set_message(t('Thank you for your payment. Your order is complete.'));
+  $comment = t('Paid by !type, NelNet Transaction ID #!order.', array('!type' => $_GET['transactionType'] == '1' ? t('credit card') : t('eCheck'), '!order' => check_plain($_GET['transactionId'])));
+    uc_payment_enter($order->order_id, 'infinet', $_GET['transactionTotalAmount']/100, 0, NULL, $comment);
+  }
+  else {
+    drupal_set_message(t('Your payment was unsuccessful. Please contact the department.'));
+    uc_order_comment_save($order->order_id, 0, t('Your payment was unsuccessful. Please contact the department.'), 'admin');
+    uc_order_comment_save($order_id, 0, t('!type payment is pending.', array('!type' => $_GET['transactionType'] == '1' ? t('Credit Card') : t('eCheck'))), 'admin');
+  }
+
+  // Empty that cart...
+  uc_cart_empty($cart_id);
+
+  // Save changes to order without it's completion (it will be on finalization step)
+  uc_order_save($order);
+
+  $url = 'cart/infinet/finalize/'. $order->order_id;
+
+  // Javascript redirect on the finalization page.
+  $output = '<script type="text/javascript">window.location = "'. url($url, array('absolute' => TRUE)) .'";</script>';
+
+  // Text link for users without Javascript enabled.
+  $output .= l('Click to complete checkout.', $url, array('absolute' => TRUE));
+
+  // 2CO needs page larger than 255 characters to display.
+  while (strlen($output) < 255) {
+    $output .= 'Test';
+  }
+
+  print $output;
+  exit();
+}
+
+function uc_infinet_finalize() {
+  $order = uc_order_load(arg(3));
+
+  // Add a comment to let sales team know this came in through the site.
+  uc_order_comment_save($order->order_id, 0, t('Order created through website.'), 'admin');
+
+  $output = uc_cart_complete_sale($order, variable_get('uc_new_customer_login', FALSE));
+
+  $page = variable_get('uc_cart_checkout_complete_page', '');
+
+  if (!empty($page)) {
+    drupal_goto($page);
+  }
+  return $output;
+}
+
+function _infinet_post_url($type) {
+ switch ($type) {
+
+    case 'single':
+      $return_url = variable_get('uc_infinet_nelneturl', NULL);
+    case 'multi':
+    default:
+      $return_url = variable_get('uc_infinet_nelneturl', NULL);
+  }
+  if ($return_url != NULL) { // the comparison is overkill as a NULL $return_url won't pass anyway
+    return $return_url;
+  }
+}
